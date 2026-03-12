@@ -97,8 +97,12 @@ async function scrapePartidos() {
 
   const jugados    = jornadas.filter(j => j.played);
   const pendientes = jornadas.filter(j => !j.played);
-  const lastMatch  = jugados.length    > 0 ? jugados[jugados.length - 1] : null;
-  const nextMatch  = pendientes.length > 0 ? pendientes[0]               : null;
+  // Ordenar por jornada descendente y coger la más reciente
+  jugados.sort((a, b) => (b.jornada || 0) - (a.jornada || 0));
+  pendientes.sort((a, b) => (a.jornada || 999) - (b.jornada || 999));
+
+  const lastMatch  = jugados.length    > 0 ? jugados[0]    : null;
+  const nextMatch  = pendientes.length > 0 ? pendientes[0] : null;
 
   return {
     lastMatch: lastMatch ? {
