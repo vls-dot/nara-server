@@ -10,9 +10,6 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// ─── CONFIGURACIÓN ───
-// Consigue tu API key gratis en https://scraperapi.com (1000 peticiones/mes gratis)
-const SCRAPER_KEY = 'd0b7014c683bc0969260be2cc6095b6e';
 const TARGET_URL = 'https://www.siguetuliga.com/equipo/ud-narahio';
 
 // Datos de reserva — actualiza manualmente si el scraping falla
@@ -20,12 +17,12 @@ const FALLBACK_DATA = {
   lastMatch: {
     homeTeam: "UD Narahío", awayTeam: "G Mugardos B",
     homeGoals: 1, awayGoals: 0,
-    date: "01/03/2026",
+    date: "Domingo, 1 de Marzo de 2026",
     competition: "2ª FUTGAL Ferrol 25/26", jornada: "Jornada 21"
   },
   nextMatch: {
     homeTeam: "Rápido de Neda", awayTeam: "UD Narahío",
-    date: "15/03/2026",
+    date: "Domingo, 15 de Marzo de 2026",
     competition: "2ª FUTGAL Ferrol 25/26", jornada: "Jornada 23"
   },
   source: "fallback"
@@ -34,130 +31,107 @@ const FALLBACK_DATA = {
 let cache = { data: null, updatedAt: null };
 const CACHE_MINUTES = 30;
 
-// ─── FETCH con ScraperAPI ───
+// ─── FETCH ───
 async function fetchPage() {
   const { data: html } = await axios.get(TARGET_URL, {
     headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
       'Accept-Language': 'es-ES,es;q=0.9',
+      'Cache-Control': 'no-cache',
     },
     timeout: 15000
   });
   return html;
 }
 
-// ─── SCRAPING lapreferente.com ───
+// ─── SCRAPING ───
 async function scrapePartidos() {
-  console.log(`[${new Date().toISOString()}] Scrapeando lapreferente.com via ScraperAPI...`);
+  console.log(`[${new Date().toISOString()}] Scrapeando siguetuliga.com...`);
 
   const html = await fetchPage();
   const $ = cheerio.load(html);
   const competition = '2ª FUTGAL Ferrol 25/26';
+  const jornadas = [];
 
-  console.log(`  → HTML recibido: ${html.length} caracteres`);
+  $('a[href*="/partido/"]').each((_, el) => {
+    const $el = $(el);
+    const linkText = $el.text().replace(/\s+/g, ' ').trim();
+    if (!linkText) return;
 
-  const jugados    = [];
-  const pendientes = [];
+    // Subir en el DOM buscando jornada y fecha
+    let jornadaNum = null;
+    let dateText = null;
+    let $parent = $el.parent();
 
-  // Buscar filas de tabla con partidos
-  $('tr').each((_, el) => {
-    const cells = $(el).find('td');
-    if (cells.length < 3) return;
-
-    const text = $(el).text().replace(/\s+/g, ' ').trim();
-
-    // Partido jugado: contiene resultado numérico
-    const scoreMatch = text.match(/(.+?)\s+(\d+)\s*[-:]\s*(\d+)\s+(.+)/);
-    if (scoreMatch) {
-      const home = scoreMatch[1].trim();
-      const away = scoreMatch[4].replace(/ver|ficha|editar/gi, '').trim();
-      if (home.length > 2 && away.length > 2 &&
-          !/^(local|visitante|equipo|jornada|fecha|resultado)$/i.test(home)) {
-        jugados.push({
-          homeTeam: home, awayTeam: away,
-          homeGoals: parseInt(scoreMatch[2]),
-          awayGoals: parseInt(scoreMatch[3]),
-          date: extractDate(text), jornada: extractJornada(text)
-        });
-        return;
+    for (let i = 0; i < 8; i++) {
+      const fullText = $parent.text();
+      if (!jornadaNum) {
+        const m = fullText.match(/[Jj]ornada\s*(\d+)/);
+        if (m) jornadaNum = parseInt(m[1]);
       }
+      if (!dateText) {
+        const d = fullText.match(/(lunes|martes|mi[eé]rcoles|jueves|viernes|s[aá]bado|domingo)[^,]*,\s*\d{1,2}\s+de\s+\w+\s+de\s+\d{4}/i);
+        if (d) dateText = d[0];
+      }
+      $parent = $parent.parent();
     }
 
-    // Partido pendiente: sin resultado pero con dos equipos
-    const parts = cells.map((_, c) => $(c).text().trim()).get().filter(t => t.length > 1);
-    if (parts.length >= 2) {
-      const hasDate = /\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/.test(text);
-      const noScore = !/\d\s*[-:]\s*\d/.test(text);
-      if (hasDate && noScore) {
-        pendientes.push({
-          homeTeam: parts[0], awayTeam: parts[parts.length - 1],
-          date: extractDate(text), jornada: extractJornada(text)
-        });
-      }
+    // Solo temporada 2025/2026
+    if (dateText && !/202[56]/.test(dateText)) return;
+
+    const clean = (s) => s.replace(/rellenar acta|enviar resultado|cambiar hora/gi, '').trim();
+
+    // Partido con resultado: "Equipo A 2 · 1 Equipo B"
+    const withScore = linkText.match(/^(.+?)\s+(\d+)\s*[·•]\s*(\d+)\s+(.+)$/);
+    // Partido pendiente: "Equipo A - Equipo B"
+    const withDash = linkText.match(/^(.+?)\s+[-–]\s+(.+)$/);
+
+    if (withScore) {
+      jornadas.push({
+        jornada: jornadaNum, date: dateText,
+        homeTeam: clean(withScore[1]), awayTeam: clean(withScore[4]),
+        homeGoals: parseInt(withScore[2]), awayGoals: parseInt(withScore[3]),
+        played: true
+      });
+    } else if (withDash) {
+      jornadas.push({
+        jornada: jornadaNum, date: dateText,
+        homeTeam: clean(withDash[1]), awayTeam: clean(withDash[2]),
+        played: false
+      });
     }
   });
 
-  // Si no encontramos nada en tablas, buscar en divs
-  if (jugados.length === 0 && pendientes.length === 0) {
-    console.log('  → No se encontraron tablas, buscando en divs...');
+  const jugados    = jornadas.filter(j => j.played);
+  const pendientes = jornadas.filter(j => !j.played);
 
-    $('[class*="match"], [class*="partido"], [class*="result"], [class*="fixture"], [class*="game"]').each((_, el) => {
-      const text = $(el).text().replace(/\s+/g, ' ').trim();
-      if (!text || text.length > 300) return;
-
-      const scoreMatch = text.match(/(.+?)\s+(\d+)\s*[-:]\s*(\d+)\s+(.+)/);
-      if (scoreMatch) {
-        jugados.push({
-          homeTeam: scoreMatch[1].trim(),
-          awayTeam: scoreMatch[4].replace(/ver|ficha/gi, '').trim(),
-          homeGoals: parseInt(scoreMatch[2]),
-          awayGoals: parseInt(scoreMatch[3]),
-          date: extractDate(text), jornada: extractJornada(text)
-        });
-      }
-    });
-  }
-
-  // Ordenar
+  // Ordenar: jugados por jornada descendente, pendientes por jornada ascendente
   jugados.sort((a, b) => (b.jornada || 0) - (a.jornada || 0));
   pendientes.sort((a, b) => (a.jornada || 999) - (b.jornada || 999));
 
-  console.log(`  → ${jugados.length} jugados, ${pendientes.length} pendientes`);
-  jugados.slice(0, 3).forEach(j =>
-    console.log(`    JUGADO: ${j.homeTeam} ${j.homeGoals}-${j.awayGoals} ${j.awayTeam} | J${j.jornada}`)
-  );
-  pendientes.slice(0, 2).forEach(j =>
-    console.log(`    PRÓXIMO: ${j.homeTeam} vs ${j.awayTeam} | ${j.date}`)
-  );
-
   const lastMatch = jugados[0]    || null;
   const nextMatch = pendientes[0] || null;
+
+  console.log(`  → ${jugados.length} jugados, ${pendientes.length} pendientes`);
+  if (lastMatch) console.log(`  → Último: ${lastMatch.homeTeam} ${lastMatch.homeGoals}-${lastMatch.awayGoals} ${lastMatch.awayTeam} (J${lastMatch.jornada})`);
+  if (nextMatch) console.log(`  → Próximo: ${nextMatch.homeTeam} vs ${nextMatch.awayTeam} (J${nextMatch.jornada})`);
 
   return {
     lastMatch: lastMatch ? {
       homeTeam: lastMatch.homeTeam, awayTeam: lastMatch.awayTeam,
       homeGoals: lastMatch.homeGoals, awayGoals: lastMatch.awayGoals,
-      date: lastMatch.date, competition,
+      date: lastMatch.date || '', competition,
       jornada: lastMatch.jornada ? `Jornada ${lastMatch.jornada}` : ''
     } : null,
     nextMatch: nextMatch ? {
       homeTeam: nextMatch.homeTeam, awayTeam: nextMatch.awayTeam,
-      date: nextMatch.date, competition,
+      date: nextMatch.date || '', competition,
       jornada: nextMatch.jornada ? `Jornada ${nextMatch.jornada}` : ''
     } : null,
     scrapedAt: new Date().toISOString(),
-    source: 'lapreferente.com'
+    source: 'siguetuliga.com'
   };
-}
-
-function extractDate(text) {
-  const m = text.match(/\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}/);
-  return m ? m[0] : '';
-}
-
-function extractJornada(text) {
-  const m = text.match(/[Jj]ornada\s*(\d+)/);
-  return m ? parseInt(m[1]) : null;
 }
 
 // ─── CACHE ───
@@ -191,7 +165,7 @@ app.get('/api/partidos', async (req, res) => {
   }
 });
 
-// Debug: muestra el HTML recibido para ajustar selectores si hace falta
+// Debug: muestra el HTML recibido
 app.get('/api/debug', async (req, res) => {
   try {
     const html = await fetchPage();
@@ -206,12 +180,10 @@ app.get('/health', (_, res) =>
   res.json({ status: 'ok', hasData: !!cache.data, updatedAt: cache.updatedAt })
 );
 
+// Actualizar automáticamente lunes y jueves a las 9:00 (Madrid)
 cron.schedule('0 9 * * 1,4', () => refreshCache(), { timezone: 'Europe/Madrid' });
 
 app.listen(PORT, async () => {
   console.log(`\n🚀 Servidor UD Narahío en puerto ${PORT}`);
-  if (SCRAPER_KEY === 'TU_API_KEY_AQUI') {
-    console.log('⚠️  AVISO: No has configurado la SCRAPER_KEY. Añádela en las variables de entorno de Render.');
-  }
   await refreshCache();
 });
