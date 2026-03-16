@@ -120,6 +120,35 @@ function extractGoal(blockHtml) {
   return null;
 }
 
+
+// ─── Fetch acta de un partido para obtener el resultado real ───
+async function fetchActa(codActa) {
+  const jar    = new CookieJar();
+  const client = wrapper(axios.create({ jar, withCredentials: true }));
+  await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 10000 });
+  await new Promise(r => setTimeout(r, 300));
+  const url = `https://www.futgal.es/pnfg/NPcd/NFG_CmpPartido?cod_primaria=1000120&CodActa=${codActa}`;
+  const { data: html } = await client.get(url, {
+    headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
+    timeout: 10000,
+    responseEncoding: 'latin1'
+  });
+  const $ = cheerio.load(html, { decodeEntities: false });
+
+  // El acta muestra el resultado en formato "N - N" en algún lugar destacado
+  let homeGoals = null, awayGoals = null;
+
+  // Buscar patrón "N - N" en el texto de la página
+  const bodyText = $.root().text().replace(/\s+/g, ' ');
+  const scoreMatch = bodyText.match(/(\d+)\s*-\s*(\d+)/);
+  if (scoreMatch) {
+    homeGoals = parseInt(scoreMatch[1]);
+    awayGoals = parseInt(scoreMatch[2]);
+  }
+
+  return { homeGoals, awayGoals };
+}
+
 // ─── Parser del calendario ───
 function parseCalendar(html) {
   const $ = cheerio.load(html, { decodeEntities: false });
@@ -161,49 +190,20 @@ function parseCalendar(html) {
 
       const matchDate = parseDate(dateStr);
 
-      // Marcador
-      const $ntypeTd  = $($tds[1]);
-      const ntypeHtml = $ntypeTd.html() || '';
-      const sepIdx    = ntypeHtml.indexOf('fa-minus');
-
-      let homeGoal = null, awayGoal = null, played = false;
-
-      if (sepIdx !== -1) {
-        homeGoal = extractGoal(ntypeHtml.substring(0, sepIdx));
-        awayGoal = extractGoal(ntypeHtml.substring(sepIdx));
-        played   = homeGoal !== null && awayGoal !== null;
-      }
-
-      // Si tiene enlace de acta → fue jugado aunque no se extraigan los goles
-      const hasActa = $(row).find('a[href*="NFG_CmpPartido"]').length > 0;
-      if (hasActa) {
-        played = true;
-        // Intentar extraer goles desde el HTML completo de la inner table si aún son null
-        if (homeGoal === null || awayGoal === null) {
-          const innerHtml = $innerTable.html() || '';
-          const allGoals  = [];
-          // Buscar todos los números visibles en spans directos del marcador
-          const spanRe = /<span[^>]*id=idh[^>]*>\s*(\d)\s*(?:<\/span>|<span[^>]*display\s*:\s*none)/g;
-          let sm;
-          while ((sm = spanRe.exec(innerHtml)) !== null) allGoals.push(parseInt(sm[1]));
-          // Buscar en CSS :before
-          const cssRe = /:before\{content:"\003(\d)"(?!.*display\s*:\s*none)/g;
-          let cm;
-          while ((cm = cssRe.exec(innerHtml)) !== null) allGoals.push(parseInt(cm[1]));
-          if (allGoals.length >= 2) {
-            homeGoal = allGoals[0];
-            awayGoal = allGoals[1];
-          }
-        }
-      }
+      // Partido jugado = tiene enlace de acta
+      const $actaLink = $(row).find('a[href*="NFG_CmpPartido"]');
+      const hasActa   = $actaLink.length > 0;
+      const actaMatch = hasActa ? ($actaLink.attr('href') || '').match(/CodActa=(\d+)/) : null;
+      const codActa   = actaMatch ? actaMatch[1] : null;
+      const played    = hasActa;
 
       // Si no tiene acta Y la fecha es pasada → ignorar
       if (!played && matchDate && matchDate < today) return;
 
-      console.log(`  J${jornadaNum}: ${homeTeam} ${played ? homeGoal+'-'+awayGoal : 'vs'} ${awayTeam} (${dateStr}) played:${played}`);
+      console.log(`  J${jornadaNum}: ${homeTeam} ${played ? '(acta:'+codActa+')' : 'vs'} ${awayTeam} (${dateStr})`);
 
       partidos.push({ jornada: jornadaNum, homeTeam, awayTeam,
-        homeGoals: homeGoal, awayGoals: awayGoal,
+        homeGoals: null, awayGoals: null, codActa,
         date: dateStr, matchDate, played });
     });
   });
@@ -243,6 +243,18 @@ async function refreshCache() {
 
     const result = parseCalendar(html);
     if (!result.lastMatch && !result.nextMatch) throw new Error('No se encontraron partidos');
+
+    // Obtener goles del acta del último partido
+    if (result.lastMatch && result.lastMatch.codActa) {
+      console.log(`  → Consultando acta ${result.lastMatch.codActa}...`);
+      try {
+        const { homeGoals, awayGoals } = await fetchActa(result.lastMatch.codActa);
+        result.lastMatch.homeGoals = homeGoals;
+        result.lastMatch.awayGoals = awayGoals;
+      } catch(e) {
+        console.log(`  → Error leyendo acta: ${e.message}`);
+      }
+    }
 
     cache.data      = result;
     cache.updatedAt = new Date();
@@ -300,6 +312,29 @@ app.get('/api/novajs', async (req, res) => {
     // Buscar solo la función ntype
     const idx = data.indexOf('ntype');
     res.send(data.substring(Math.max(0, idx - 50), idx + 500));
+  } catch(err) {
+    res.set('Content-Type', 'text/plain');
+    res.send('ERROR: ' + err.message);
+  }
+});
+
+
+// Debug acta: /api/acta?cod=1307471
+app.get('/api/acta', async (req, res) => {
+  const cod = req.query.cod || '1307471';
+  try {
+    const jar    = new CookieJar();
+    const client = wrapper(axios.create({ jar, withCredentials: true }));
+    await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 10000 });
+    const { data: html } = await client.get(
+      `https://www.futgal.es/pnfg/NPcd/NFG_CmpPartido?cod_primaria=1000120&CodActa=${cod}`,
+      { headers: { ...HEADERS, Referer: FUTGAL_HOME+'/' }, timeout: 10000, responseEncoding: 'latin1' }
+    );
+    res.set('Content-Type', 'text/plain');
+    // Show just the relevant part
+    const $ = cheerio.load(html, { decodeEntities: false });
+    const bodyText = $.root().text().replace(/\s+/g, ' ').substring(0, 3000);
+    res.send(`=== ACTA ${cod} ===\n\n` + bodyText);
   } catch(err) {
     res.set('Content-Type', 'text/plain');
     res.send('ERROR: ' + err.message);
