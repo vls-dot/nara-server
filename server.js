@@ -12,11 +12,9 @@ const PORT = process.env.PORT || 3000;
 app.use(cors({ origin: '*' }));
 app.use(express.json());
 
-// ─── La página muestra TODA la temporada — solo necesitamos un fetch ───
-const FUTGAL_URL = 'https://www.futgal.es/pnfg/NPcd/NFG_VisCalendario_Vis' +
+const FUTGAL_URL  = 'https://www.futgal.es/pnfg/NPcd/NFG_VisCalendario_Vis' +
   '?cod_primaria=1000120&codgrupo=24730792&codcompeticion=24123267' +
   '&codtemporada=21&CodJornada=22&cod_agrupacion=&CDetalle=1';
-
 const FUTGAL_HOME = 'https://www.futgal.es';
 
 const HEADERS = {
@@ -46,12 +44,8 @@ const CACHE_MINUTES = 60;
 async function fetchPage() {
   const jar    = new CookieJar();
   const client = wrapper(axios.create({ jar, withCredentials: true }));
-
-  // Paso 1: home para obtener session_id
   await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 15000 });
   await new Promise(r => setTimeout(r, 500));
-
-  // Paso 2: página del calendario completo
   const { data: html } = await client.get(FUTGAL_URL, {
     headers: { ...HEADERS, Referer: `${FUTGAL_HOME}/` },
     timeout: 20000
@@ -59,93 +53,96 @@ async function fetchPage() {
   return html || '';
 }
 
-// ─── Extraer número de gol del HTML del td.ntype ───
-// futgal oculta los goles con JS/CSS, pero siempre deja el número
-// en algún sitio accesible: display:none span, texto directo, o clase fa-N
-function extractGoal(ntypeHtml) {
-  // 1. Buscar <span style="display:none;">N</span>
-  const hiddenSpan = ntypeHtml.match(/<span[^>]*display\s*:\s*none[^>]*>(\d+)<\/span>/i);
-  if (hiddenSpan) return parseInt(hiddenSpan[1]);
+// ─── Extraer gol del bloque HTML de un <strong><i class=fa-solid>...</i></strong> ───
+// futgal usa 4 técnicas de obfuscación, las manejamos todas:
+function extractGoal(blockHtml) {
+  // Técnica 1: CSS :before con content:"\003N" (sin display:none) → gol real
+  // Ejemplo: <style>#id:before{content:"\0032"}</style>
+  const beforeMatch = blockHtml.match(/:before\{content:"\\003(\d)"(?!.*display\s*:\s*none)/);
+  if (beforeMatch) return parseInt(beforeMatch[1]);
 
-  // 2. Buscar texto directo en <i class=fa-solid>N</i> (sin hijos)
-  const directText = ntypeHtml.match(/<i[^>]*fa-solid[^>]*>\s*(\d+)\s*<\/i>/i);
-  if (directText) return parseInt(directText[1]);
+  // Técnica 2: <span id=X>N<span style="display:none;">SEÑUELO</span></span>
+  // El primer texto directo del span (antes del hijo oculto) es el gol real
+  const spanMatch = blockHtml.match(/<span[^>]*id=[^>]*>(\d)(?:<span[^>]*display\s*:\s*none[^>]*>|$)/);
+  if (spanMatch) return parseInt(spanMatch[1]);
 
-  // 3. Buscar clase fa-N (fa-0 a fa-9)
-  const faClass = ntypeHtml.match(/class=['""]?fa-(\d)\b/i);
+  // Técnica 3: <span id=X>N</span> texto directo sin hijos
+  const simpleSpan = blockHtml.match(/<span[^>]*id=[^>]*>(\d)<\/span>/);
+  if (simpleSpan) return parseInt(simpleSpan[1]);
+
+  // Técnica 4: class=fa-N en <i> interior (cuando las anteriores fallan)
+  const faClass = blockHtml.match(/class=fa-(\d)\b/);
   if (faClass) return parseInt(faClass[1]);
+
+  // Técnica 5: número directo en <i class=fa-solid>N</i>
+  const directI = blockHtml.match(/<i[^>]*fa-solid[^>]*>\s*(\d)\s*<\/i>/);
+  if (directI) return parseInt(directI[1]);
 
   return null;
 }
 
-// ─── Parser principal ───
+// ─── Parser del calendario completo ───
 function parseCalendar(html) {
   const $ = cheerio.load(html);
-  const NARAHIO = /narah[ií]o/i;
+  const NARAHIO     = /narah[ií]o/i;
   const competition = '2ª FUTGAL Ferrol 25/26';
-  const partidos = [];
+  const partidos    = [];
 
-  // Recorrer cada panel de jornada
-  // Estructura: <div class="panel panel-primary"> > <h3>Jornada N ...</h3> > <table> > <tr> (partidos)
   $('.panel.panel-primary').each((_, panel) => {
     const $panel = $(panel);
 
-    // Número de jornada
-    const heading   = $panel.find('.panel-title').text();
-    const jornadaM  = heading.match(/Jornada\s*(\d+)/i);
-    const jornadaNum = jornadaM ? parseInt(jornadaM[1]) : null;
+    // Número y fecha de la jornada desde el heading
+    const headingText = $panel.find('.panel-title').text();
+    const jornadaM    = headingText.match(/Jornada\s*(\d+)/i);
+    const jornadaNum  = jornadaM ? parseInt(jornadaM[1]) : null;
+    const fechaM      = headingText.match(/\((\d{2}-\d{2}-\d{4})\)/);
+    const fechaJornada = fechaM ? fechaM[1] : '';
 
-    // Fecha de la jornada desde el heading: "(DD-MM-YYYY)"
-    const fechaJM  = heading.match(/\((\d{2}-\d{2}-\d{4})\)/);
-    const fechaJornada = fechaJM ? fechaJM[1] : '';
-
-    // Cada fila es un partido — contiene una inner table con 4 tds
-    $panel.find('tr').each((_, row) => {
-      const $row = $(row);
-
-      // Inner table con los equipos y el resultado
-      const $innerTable = $row.find('table');
+    // Cada fila exterior = un partido
+    $panel.find('> .panel-body > table > tbody > tr, > .panel-body > table > tr').each((_, row) => {
+      // La fila exterior tiene una inner table con los equipos
+      const $innerTable = $(row).find('table').first();
       if (!$innerTable.length) return;
 
-      // Celdas de la inner table
-      const $tds = $innerTable.find('td');
+      const $tds = $innerTable.find('tr').first().find('td');
       if ($tds.length < 3) return;
 
-      // td[0] = equipo local (align=right), td[1] = ntype (marcador), td[2] = equipo visitante
-      const homeTeam = $($tds[0]).find('span.font_responsive').text().trim();
-      const awayTeam = $($tds[2]).find('span.font_responsive').text().trim();
-      const $ntypeTd = $tds.filter((_, td) => $(td).hasClass('ntype'));
-
+      const homeTeam = $($tds[0]).find('.font_responsive').text().trim();
+      const awayTeam = $($tds[2]).find('.font_responsive').text().trim();
       if (!homeTeam || !awayTeam) return;
       if (!NARAHIO.test(homeTeam) && !NARAHIO.test(awayTeam)) return;
 
-      // Extraer fecha del div con fa-clock-o
+      // Fecha específica del partido
       let dateStr = fechaJornada;
-      const clockText = $row.find('.fa-clock-o').parent().text().trim();
+      const clockDiv = $(row).find('.fa-clock-o').closest('div, td');
+      const clockText = clockDiv.text().trim();
       const dateMatch = clockText.match(/(\d{2}-\d{2}-\d{4})/);
       if (dateMatch) dateStr = dateMatch[1];
 
-      // Extraer goles
+      // Celda del marcador (td.ntype con align=center)
+      const $ntypeTd = $($tds[1]);
       const ntypeHtml = $ntypeTd.html() || '';
-      
-      // Separar goles: el marcador es "gol_local - gol_visitante"
-      // El html tiene: [strong con gol1] [fa-minus] [strong con gol2]
-      const parts = ntypeHtml.split(/<i[^>]*fa-minus[^>]*>/i);
-      const homeGoal = parts[0] ? extractGoal(parts[0]) : null;
-      const awayGoal = parts[1] ? extractGoal(parts[1]) : null;
 
-      const played = homeGoal !== null && awayGoal !== null;
+      // Dividir por el separador fa-minus entre gol local y visitante
+      const separatorIdx = ntypeHtml.indexOf('fa-minus');
+      if (separatorIdx === -1) {
+        // Sin resultado — partido pendiente
+        partidos.push({ jornada: jornadaNum, homeTeam, awayTeam,
+          homeGoals: null, awayGoals: null, date: dateStr, played: false });
+        return;
+      }
+
+      const homePart = ntypeHtml.substring(0, separatorIdx);
+      const awayPart = ntypeHtml.substring(separatorIdx);
+
+      const homeGoal = extractGoal(homePart);
+      const awayGoal = extractGoal(awayPart);
+      const played   = homeGoal !== null && awayGoal !== null;
 
       console.log(`  J${jornadaNum}: ${homeTeam} ${played ? homeGoal+'-'+awayGoal : 'vs'} ${awayTeam} (${dateStr})`);
 
-      partidos.push({
-        jornada: jornadaNum,
-        homeTeam, awayTeam,
-        homeGoals: homeGoal,
-        awayGoals: awayGoal,
-        date: dateStr,
-        played
-      });
+      partidos.push({ jornada: jornadaNum, homeTeam, awayTeam,
+        homeGoals: homeGoal, awayGoals: awayGoal, date: dateStr, played });
     });
   });
 
@@ -154,20 +151,13 @@ function parseCalendar(html) {
 
   return {
     lastMatch: jugados[0] ? {
-      homeTeam:  jugados[0].homeTeam,
-      awayTeam:  jugados[0].awayTeam,
-      homeGoals: jugados[0].homeGoals,
-      awayGoals: jugados[0].awayGoals,
-      date:      jugados[0].date,
-      competition,
-      jornada:   `Jornada ${jugados[0].jornada}`
+      homeTeam:  jugados[0].homeTeam,  awayTeam:  jugados[0].awayTeam,
+      homeGoals: jugados[0].homeGoals, awayGoals: jugados[0].awayGoals,
+      date: jugados[0].date, competition, jornada: `Jornada ${jugados[0].jornada}`
     } : null,
     nextMatch: pendientes[0] ? {
-      homeTeam:  pendientes[0].homeTeam,
-      awayTeam:  pendientes[0].awayTeam,
-      date:      pendientes[0].date,
-      competition,
-      jornada:   `Jornada ${pendientes[0].jornada}`
+      homeTeam: pendientes[0].homeTeam, awayTeam: pendientes[0].awayTeam,
+      date: pendientes[0].date, competition, jornada: `Jornada ${pendientes[0].jornada}`
     } : null,
     scrapedAt: new Date().toISOString(),
     source: 'futgal.es'
@@ -178,21 +168,21 @@ function parseCalendar(html) {
 async function refreshCache() {
   try {
     console.log(`[${new Date().toISOString()}] Scrapeando futgal.es...`);
-    const html   = await fetchPage();
+    const html = await fetchPage();
     console.log(`  → HTML: ${html.length} chars`);
     if (html.length < 1000) throw new Error('HTML demasiado corto');
 
     const result = parseCalendar(html);
     if (!result.lastMatch && !result.nextMatch) throw new Error('No se encontraron partidos del Narahío');
 
-    cache.data = result;
+    cache.data      = result;
     cache.updatedAt = new Date();
-    console.log(`✅ Cache actualizado — último: ${result.lastMatch?.homeTeam} ${result.lastMatch?.homeGoals}-${result.lastMatch?.awayGoals} ${result.lastMatch?.awayTeam}`);
-    console.log(`   próximo: ${result.nextMatch?.homeTeam} vs ${result.nextMatch?.awayTeam}`);
+    console.log(`✅ Último:  ${result.lastMatch?.homeTeam} ${result.lastMatch?.homeGoals}-${result.lastMatch?.awayGoals} ${result.lastMatch?.awayTeam}`);
+    console.log(`   Próximo: ${result.nextMatch?.homeTeam} vs ${result.nextMatch?.awayTeam}`);
   } catch (err) {
     console.error('❌ Error:', err.message);
     if (!cache.data) {
-      cache.data = { ...FALLBACK_DATA, scrapedAt: new Date().toISOString() };
+      cache.data      = { ...FALLBACK_DATA, scrapedAt: new Date().toISOString() };
       cache.updatedAt = new Date();
       console.log('⚠️  Usando datos de reserva');
     }
@@ -212,14 +202,13 @@ app.get('/api/partidos', async (req, res) => {
   }
 });
 
-// Debug: muestra el HTML en el offset indicado
 app.get('/api/debug', async (req, res) => {
   const offset = parseInt(req.query.offset) || 0;
   try {
     const html     = await fetchPage();
     const narahIdx = html.toLowerCase().indexOf('narah');
     res.set('Content-Type', 'text/plain');
-    res.send(`Total: ${html.length} chars | Narahío pos: ${narahIdx}\n\n` +
+    res.send(`Total: ${html.length} | Narahío pos: ${narahIdx}\n\n` +
              html.substring(offset, offset + 10000));
   } catch (err) {
     res.set('Content-Type', 'text/plain');
