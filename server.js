@@ -74,16 +74,21 @@ function normalizeName(name) {
     .trim();
 }
 
-// ─── Fetch con cookie jar ───
-async function fetchPage() {
+// ─── Crear cliente con sesión iniciada ───
+async function createSession() {
   const jar    = new CookieJar();
   const client = wrapper(axios.create({ jar, withCredentials: true }));
   await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 15000 });
   await new Promise(r => setTimeout(r, 500));
+  return client;
+}
+
+// ─── Fetch página principal del calendario ───
+async function fetchPage(client) {
   const { data: html } = await client.get(FUTGAL_URL, {
     headers: { ...HEADERS, Referer: `${FUTGAL_HOME}/` },
     timeout: 20000,
-    responseEncoding: 'latin1'   // ← Arregla el encoding ISO-8859-15
+    responseEncoding: 'latin1'
   });
   return html || '';
 }
@@ -121,32 +126,15 @@ function extractGoal(blockHtml) {
 }
 
 
-// ─── Fetch acta de un partido para obtener el resultado real ───
-async function fetchActa(codActa) {
-  const jar    = new CookieJar();
-  const client = wrapper(axios.create({ jar, withCredentials: true }));
-  await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 10000 });
-  await new Promise(r => setTimeout(r, 300));
+// ─── Fetch acta usando cliente con sesión ya iniciada ───
+async function fetchActa(client, codActa) {
   const url = `https://www.futgal.es/pnfg/NPcd/NFG_CmpPartido?cod_primaria=1000120&CodActa=${codActa}`;
   const { data: html } = await client.get(url, {
     headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
-    timeout: 10000,
+    timeout: 15000,
     responseEncoding: 'latin1'
   });
-  const $ = cheerio.load(html, { decodeEntities: false });
-
-  // El acta muestra el resultado en formato "N - N" en algún lugar destacado
-  let homeGoals = null, awayGoals = null;
-
-  // Buscar patrón "N - N" en el texto de la página
-  const bodyText = $.root().text().replace(/\s+/g, ' ');
-  const scoreMatch = bodyText.match(/(\d+)\s*-\s*(\d+)/);
-  if (scoreMatch) {
-    homeGoals = parseInt(scoreMatch[1]);
-    awayGoals = parseInt(scoreMatch[2]);
-  }
-
-  return { homeGoals, awayGoals };
+  return html || '';
 }
 
 // ─── Parser del calendario ───
@@ -237,20 +225,29 @@ function parseCalendar(html) {
 async function refreshCache() {
   try {
     console.log(`[${new Date().toISOString()}] Scrapeando futgal.es...`);
-    const html = await fetchPage();
+    const client = await createSession();
+    const html   = await fetchPage(client);
     console.log(`  → HTML: ${html.length} chars`);
     if (html.length < 1000) throw new Error('HTML demasiado corto');
 
     const result = parseCalendar(html);
     if (!result.lastMatch && !result.nextMatch) throw new Error('No se encontraron partidos');
 
-    // Obtener goles del acta del último partido
+    // Obtener goles del acta del último partido (mismo cliente = misma sesión)
     if (result.lastMatch && result.lastMatch.codActa) {
       console.log(`  → Consultando acta ${result.lastMatch.codActa}...`);
       try {
-        const { homeGoals, awayGoals } = await fetchActa(result.lastMatch.codActa);
-        result.lastMatch.homeGoals = homeGoals;
-        result.lastMatch.awayGoals = awayGoals;
+        const actaHtml = await fetchActa(client, result.lastMatch.codActa);
+        console.log(`  → Acta HTML: ${actaHtml.length} chars`);
+        // Buscar resultado en el HTML del acta
+        const $a = cheerio.load(actaHtml, { decodeEntities: false });
+        const actaText = $a.root().text().replace(/\s+/g, ' ');
+        // El resultado aparece como "N - N" o "N-N"
+        const scoreM = actaText.match(/(\d+)\s*[-–]\s*(\d+)/);
+        if (scoreM) {
+          result.lastMatch.homeGoals = parseInt(scoreM[1]);
+          result.lastMatch.awayGoals = parseInt(scoreM[2]);
+        }
       } catch(e) {
         console.log(`  → Error leyendo acta: ${e.message}`);
       }
@@ -286,7 +283,8 @@ app.get('/api/partidos', async (req, res) => {
 app.get('/api/debug', async (req, res) => {
   const offset = parseInt(req.query.offset) || 0;
   try {
-    const html     = await fetchPage();
+    const client = await createSession();
+    const html   = await fetchPage(client);
     const narahIdx = html.toLowerCase().indexOf('narah');
     res.set('Content-Type', 'text/plain');
     res.send(`Total: ${html.length} | Narahío pos: ${narahIdx}\n\n` +
@@ -301,9 +299,7 @@ app.get('/api/debug', async (req, res) => {
 
 app.get('/api/novajs', async (req, res) => {
   try {
-    const jar    = new CookieJar();
-    const client = wrapper(axios.create({ jar, withCredentials: true }));
-    await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 15000 });
+    const client = await createSession();
     const { data } = await client.get('https://www.futgal.es/pnfg/script/nova.js', {
       headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
       timeout: 10000, responseType: 'text'
@@ -323,13 +319,8 @@ app.get('/api/novajs', async (req, res) => {
 app.get('/api/acta', async (req, res) => {
   const cod = req.query.cod || '1307471';
   try {
-    const jar    = new CookieJar();
-    const client = wrapper(axios.create({ jar, withCredentials: true }));
-    await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 10000 });
-    const { data: html } = await client.get(
-      `https://www.futgal.es/pnfg/NPcd/NFG_CmpPartido?cod_primaria=1000120&CodActa=${cod}`,
-      { headers: { ...HEADERS, Referer: FUTGAL_HOME+'/' }, timeout: 10000, responseEncoding: 'latin1' }
-    );
+    const client = await createSession();
+    const html   = await fetchActa(client, cod);
     const offset = parseInt(req.query.offset) || 0;
     res.set('Content-Type', 'text/plain');
     res.send(`=== ACTA ${cod} | Total: ${html.length} chars ===\n\n` + html.substring(offset, offset + 8000));
@@ -341,7 +332,8 @@ app.get('/api/acta', async (req, res) => {
 
 app.get('/api/narahio-html', async (req, res) => {
   try {
-    const html = await fetchPage();
+    const client = await createSession();
+    const html   = await fetchPage(client);
     const $ = cheerio.load(html, { decodeEntities: false });
     const results = [];
     $('.panel.panel-primary').each((_, panel) => {
