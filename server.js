@@ -297,6 +297,45 @@ app.get('/api/debug', async (req, res) => {
 
 
 
+
+// Debug: buscar función ntype en nova.js
+app.get('/api/ntype', async (req, res) => {
+  try {
+    const client = await createSession();
+    const { data } = await client.get('https://files.futgal.es/pnfg/script/nova_marco/global/scripts/app.min.js', {
+      headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
+      timeout: 15000, responseType: 'text'
+    });
+    const idx = data.indexOf('function ntype');
+    if (idx >= 0) {
+      res.set('Content-Type', 'text/plain');
+      res.send('FOUND at ' + idx + ':\n\n' + data.substring(idx, idx + 800));
+    } else {
+      // Try nova.js
+      const { data: nova } = await client.get('https://files.futgal.es/pnfg/script/nova.js', {
+        headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
+        timeout: 15000, responseType: 'text'
+      });
+      const idx2 = nova.indexOf('function ntype');
+      res.set('Content-Type', 'text/plain');
+      if (idx2 >= 0) {
+        res.send('FOUND in nova.js at ' + idx2 + ':\n\n' + nova.substring(idx2, idx2 + 800));
+      } else {
+        // Search all script files listed on the page
+        const calHtml = await fetchPage(client);
+        const scripts = [];
+        const re = /src="([^"]*\.js[^"]*)"/g;
+        let m;
+        while ((m = re.exec(calHtml)) !== null) scripts.push(m[1]);
+        res.send('ntype not found. Scripts on page:\n' + scripts.join('\n'));
+      }
+    }
+  } catch(err) {
+    res.set('Content-Type', 'text/plain');
+    res.send('ERROR: ' + err.message + '\n' + err.stack);
+  }
+});
+
 app.get('/api/novajs', async (req, res) => {
   try {
     const client = await createSession();
