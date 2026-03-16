@@ -89,24 +89,31 @@ async function fetchPage() {
 }
 
 // ─── Extraer gol del bloque HTML ───
+// futgal usa CSS/JS para ofuscar los números. Estrategia:
+// 1. Buscar style :before{content:"\003N"} sin display:none EN EL MISMO BLOQUE {}
+// 2. Primer dígito visible en span con id=idh (antes de cualquier hijo oculto)
+// 3. Clase fa-N en <i> interior
+// 4. Texto directo en fa-solid
 function extractGoal(blockHtml) {
-  // CSS :before con content:"\003N"
-  const beforeMatch = blockHtml.match(/:before\{content:"\\003(\d)"(?!.*display\s*:\s*none)/);
-  if (beforeMatch) return parseInt(beforeMatch[1]);
+  // 1. CSS :before — extraer todos los bloques style y buscar :before con gol real
+  const styleBlocks = blockHtml.match(/<style>[^<]*<\/style>/g) || [];
+  for (const sb of styleBlocks) {
+    const m = sb.match(/:before\{content:"\\003(\d)"\}/);
+    if (m) return parseInt(m[1]);
+  }
 
-  // Span con dígito visible seguido de hijo oculto: <span>2<span hidden>...</span>
-  const spanVisible = blockHtml.match(/<span[^>]*id=[^>]*>\s*(\d)\s*(?:<span[^>]*display\s*:\s*none|<\/span>)/);
-  if (spanVisible) return parseInt(spanVisible[1]);
+  // 2. Span con id=idh: el PRIMER texto visible (antes del primer span oculto hijo)
+  const spanMatch = blockHtml.match(/<span[^>]*id=idh[^>]*>([^<]*)/);
+  if (spanMatch) {
+    const txt = spanMatch[1].trim();
+    if (/^\d$/.test(txt)) return parseInt(txt);
+  }
 
-  // Span directo: <span id=X>2</span>
-  const simpleSpan = blockHtml.match(/<span[^>]*id=[^>]*>\s*(\d)\s*<\/span>/);
-  if (simpleSpan) return parseInt(simpleSpan[1]);
-
-  // Clase fa-N
+  // 3. Clase fa-N en <i> interior
   const faClass = blockHtml.match(/class=fa-(\d)\b/);
   if (faClass) return parseInt(faClass[1]);
 
-  // Número directo en <i class=fa-solid>N</i>
+  // 4. Número directo en fa-solid sin hijos
   const directI = blockHtml.match(/<i[^>]*fa-solid[^>]*>\s*(\d)\s*<\/i>/);
   if (directI) return parseInt(directI[1]);
 
@@ -167,11 +174,30 @@ function parseCalendar(html) {
         played   = homeGoal !== null && awayGoal !== null;
       }
 
-      // Si tiene enlace de acta → fue jugado aunque no extraigamos los goles
+      // Si tiene enlace de acta → fue jugado aunque no se extraigan los goles
       const hasActa = $(row).find('a[href*="NFG_CmpPartido"]').length > 0;
-      if (!played && hasActa) played = true;
+      if (hasActa) {
+        played = true;
+        // Intentar extraer goles desde el HTML completo de la inner table si aún son null
+        if (homeGoal === null || awayGoal === null) {
+          const innerHtml = $innerTable.html() || '';
+          const allGoals  = [];
+          // Buscar todos los números visibles en spans directos del marcador
+          const spanRe = /<span[^>]*id=idh[^>]*>\s*(\d)\s*(?:<\/span>|<span[^>]*display\s*:\s*none)/g;
+          let sm;
+          while ((sm = spanRe.exec(innerHtml)) !== null) allGoals.push(parseInt(sm[1]));
+          // Buscar en CSS :before
+          const cssRe = /:before\{content:"\003(\d)"(?!.*display\s*:\s*none)/g;
+          let cm;
+          while ((cm = cssRe.exec(innerHtml)) !== null) allGoals.push(parseInt(cm[1]));
+          if (allGoals.length >= 2) {
+            homeGoal = allGoals[0];
+            awayGoal = allGoals[1];
+          }
+        }
+      }
 
-      // Si no tiene resultado, no tiene acta Y la fecha es pasada → ignorar
+      // Si no tiene acta Y la fecha es pasada → ignorar
       if (!played && matchDate && matchDate < today) return;
 
       console.log(`  J${jornadaNum}: ${homeTeam} ${played ? homeGoal+'-'+awayGoal : 'vs'} ${awayTeam} (${dateStr}) played:${played}`);
