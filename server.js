@@ -285,6 +285,7 @@ app.get('/api/debug', async (req, res) => {
   }
 });
 
+
 app.get('/api/narahio-html', async (req, res) => {
   try {
     const html = await fetchPage();
@@ -297,7 +298,7 @@ app.get('/api/narahio-html', async (req, res) => {
           const $inner = $(row).find('table').first();
           results.push({
             jornada: $(panel).find('.panel-title').text().trim(),
-            html: $inner.html()
+            innerHtml: $inner.html()
           });
         }
       });
@@ -307,11 +308,6 @@ app.get('/api/narahio-html', async (req, res) => {
     res.status(500).send('ERROR: ' + err.message);
   }
 });
-```
-
-Sube ese cambio, luego abre:
-```
-https://TU-SERVIDOR.onrender.com/api/narahio-html
 
 app.get('/health', (_, res) =>
   res.json({ status: 'ok', hasData: !!cache.data, updatedAt: cache.updatedAt })
