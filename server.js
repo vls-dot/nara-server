@@ -167,7 +167,11 @@ function parseCalendar(html) {
         played   = homeGoal !== null && awayGoal !== null;
       }
 
-      // Si no tiene resultado Y la fecha es pasada → partido sin acta, ignorar
+      // Si tiene enlace de acta → fue jugado aunque no extraigamos los goles
+      const hasActa = $(row).find('a[href*="NFG_CmpPartido"]').length > 0;
+      if (!played && hasActa) played = true;
+
+      // Si no tiene resultado, no tiene acta Y la fecha es pasada → ignorar
       if (!played && matchDate && matchDate < today) return;
 
       console.log(`  J${jornadaNum}: ${homeTeam} ${played ? homeGoal+'-'+awayGoal : 'vs'} ${awayTeam} (${dateStr}) played:${played}`);
