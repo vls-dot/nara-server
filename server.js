@@ -13,7 +13,7 @@ app.use(express.json());
 // ─── CONFIGURACIÓN ───
 // Consigue tu API key gratis en https://scraperapi.com (1000 peticiones/mes gratis)
 const SCRAPER_KEY = 'd0b7014c683bc0969260be2cc6095b6e';
-const TARGET_URL  = 'https://www.lapreferente.com/E13336C22825-13/ud-y-cultural-narahio';
+const TARGET_URL = 'https://www.siguetuliga.com/equipo/ud-narahio';
 
 // Datos de reserva — actualiza manualmente si el scraping falla
 const FALLBACK_DATA = {
@@ -36,8 +36,13 @@ const CACHE_MINUTES = 30;
 
 // ─── FETCH con ScraperAPI ───
 async function fetchPage() {
-  const url = `http://api.scraperapi.com?api_key=${SCRAPER_KEY}&url=${encodeURIComponent(TARGET_URL)}`;
-  const { data: html } = await axios.get(url, { timeout: 30000 });
+  const { data: html } = await axios.get(TARGET_URL, {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0.0.0 Safari/537.36',
+      'Accept-Language': 'es-ES,es;q=0.9',
+    },
+    timeout: 15000
+  });
   return html;
 }
 
