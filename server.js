@@ -330,17 +330,9 @@ app.get('/api/acta', async (req, res) => {
       `https://www.futgal.es/pnfg/NPcd/NFG_CmpPartido?cod_primaria=1000120&CodActa=${cod}`,
       { headers: { ...HEADERS, Referer: FUTGAL_HOME+'/' }, timeout: 10000, responseEncoding: 'latin1' }
     );
+    const offset = parseInt(req.query.offset) || 0;
     res.set('Content-Type', 'text/plain');
-    const $ = cheerio.load(html, { decodeEntities: false });
-    // Buscar elementos con el resultado
-    const scoreEls = [];
-    $('[class*="resultado"], [class*="wid2"], .ntype, [class*="marcador"], [class*="score"]').each((_, el) => {
-      scoreEls.push($(el).attr('class') + ' → ' + $(el).html());
-    });
-    // También mostrar chunk del HTML donde aparece el resultado
-    const chunk = html.substring(html.indexOf('wid2') > 0 ? Math.max(0, html.indexOf('wid2') - 200) : 5000, 
-                                  html.indexOf('wid2') > 0 ? html.indexOf('wid2') + 3000 : 8000);
-    res.send(`=== ACTA ${cod} ===\n\nELEMENTOS SCORE:\n${scoreEls.slice(0,20).join('\n')}\n\nHTML CHUNK:\n${chunk}`);
+    res.send(`=== ACTA ${cod} | Total: ${html.length} chars ===\n\n` + html.substring(offset, offset + 8000));
   } catch(err) {
     res.set('Content-Type', 'text/plain');
     res.send('ERROR: ' + err.message);
