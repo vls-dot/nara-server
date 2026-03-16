@@ -12,7 +12,7 @@ app.use(express.json());
 
 // ─── CONFIGURACIÓN ───
 // Consigue tu API key gratis en https://scraperapi.com (1000 peticiones/mes gratis)
-const SCRAPER_KEY = process.env.SCRAPER_KEY || 'TU_API_KEY_AQUI';
+const SCRAPER_KEY = 'd0b7014c683bc0969260be2cc6095b6e';
 const TARGET_URL  = 'https://www.lapreferente.com/E13336C22825-13/ud-y-cultural-narahio';
 
 // Datos de reserva — actualiza manualmente si el scraping falla
