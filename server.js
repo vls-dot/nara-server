@@ -286,6 +286,26 @@ app.get('/api/debug', async (req, res) => {
 });
 
 
+
+app.get('/api/novajs', async (req, res) => {
+  try {
+    const jar    = new CookieJar();
+    const client = wrapper(axios.create({ jar, withCredentials: true }));
+    await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 15000 });
+    const { data } = await client.get('https://www.futgal.es/pnfg/script/nova.js', {
+      headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
+      timeout: 10000, responseType: 'text'
+    });
+    res.set('Content-Type', 'text/plain');
+    // Buscar solo la función ntype
+    const idx = data.indexOf('ntype');
+    res.send(data.substring(Math.max(0, idx - 50), idx + 500));
+  } catch(err) {
+    res.set('Content-Type', 'text/plain');
+    res.send('ERROR: ' + err.message);
+  }
+});
+
 app.get('/api/narahio-html', async (req, res) => {
   try {
     const html = await fetchPage();
