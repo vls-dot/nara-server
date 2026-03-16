@@ -25,13 +25,13 @@ const HEADERS = {
 
 const FALLBACK_DATA = {
   lastMatch: {
-    homeTeam: "UD Narahío", awayTeam: "G Mugardos B",
-    homeGoals: 1, awayGoals: 0, date: "01/03/2026",
-    competition: "2ª FUTGAL Ferrol 25/26", jornada: "Jornada 21"
+    homeTeam: "AD Miño B", awayTeam: "UD Narahío",
+    homeGoals: 0, awayGoals: 2, date: "15-03-2026",
+    competition: "2ª FUTGAL Ferrol 25/26", jornada: "Jornada 22"
   },
   nextMatch: {
-    homeTeam: "Rápido de Neda", awayTeam: "UD Narahío",
-    date: "15/03/2026",
+    homeTeam: "UD Narahío", awayTeam: "A.D.R. Numancia de Ares",
+    date: "22-03-2026",
     competition: "2ª FUTGAL Ferrol 25/26", jornada: "Jornada 23"
   },
   source: "fallback"
@@ -40,41 +40,7 @@ const FALLBACK_DATA = {
 let cache = { data: null, updatedAt: null };
 const CACHE_MINUTES = 60;
 
-// ─── Convertir fecha "DD-MM-YYYY" a objeto Date ───
-function parseDate(str) {
-  if (!str) return null;
-  const m = str.match(/(\d{2})-(\d{2})-(\d{4})/);
-  if (!m) return null;
-  return new Date(`${m[3]}-${m[2]}-${m[1]}`);
-}
-
-// ─── Arreglar encoding ISO-8859-15 → UTF-8 ───
-function fixEncoding(str) {
-  return str
-    .replace(/\uFFFD/g, '')        // caracteres inválidos
-    .replace(/MI.O/g,  'MIÑO')
-    .replace(/CARI.O/g,'CARIÑO')
-    .replace(/VALDO.I.O/g, 'VALDOVIÑO')
-    .replace(/SADURNI.O/g, 'SADURNIÑO')
-    .replace(/\u00C3\u00B1/g, 'ñ')
-    .replace(/\u00C3\u0091/g, 'Ñ')
-    .trim();
-}
-
-// ─── Normalizar nombre del equipo ───
-function normalizeName(name) {
-  return fixEncoding(name)
-    .replace(/NARAHIO U\.?D\.?/i, 'UD Narahío')
-    .replace(/RAPIDO DE NEDA/i,   'Rápido de Neda')
-    .replace(/\bU\.D\.\b/g, 'UD')
-    .replace(/\bS\.D\.\b/g, 'SD')
-    .replace(/\bC\.D\.\b/g, 'CD')
-    .replace(/\bC\.F\.\b/g, 'CF')
-    .replace(/\bA\.D\.\b/g, 'AD')
-    .trim();
-}
-
-// ─── Crear cliente con sesión iniciada ───
+// ─── Crear sesión con cookie jar ───
 async function createSession() {
   const jar    = new CookieJar();
   const client = wrapper(axios.create({ jar, withCredentials: true }));
@@ -83,7 +49,7 @@ async function createSession() {
   return client;
 }
 
-// ─── Fetch página principal del calendario ───
+// ─── Fetch del calendario ───
 async function fetchPage(client) {
   const { data: html } = await client.get(FUTGAL_URL, {
     headers: { ...HEADERS, Referer: `${FUTGAL_HOME}/` },
@@ -93,68 +59,81 @@ async function fetchPage(client) {
   return html || '';
 }
 
-// ─── Extraer gol del bloque HTML ───
-// futgal usa CSS/JS para ofuscar los números. Estrategia:
-// 1. Buscar style :before{content:"\003N"} sin display:none EN EL MISMO BLOQUE {}
-// 2. Primer dígito visible en span con id=idh (antes de cualquier hijo oculto)
-// 3. Clase fa-N en <i> interior
-// 4. Texto directo en fa-solid
+// ─── Extraer gol de un bloque HTML ───
+// Estrategia por orden de fiabilidad:
+// 1. Texto directo en <i class="fa-solid">N</i> (sin hijos)
+// 2. Primer texto visible en <span id=idh...> antes de cualquier hijo oculto
+// 3. Número en clase fa-N del <i> interior
+// 4. CSS :before con content:"\003N" (sin display:none)
 function extractGoal(blockHtml) {
-  // 1. CSS :before — extraer todos los bloques style y buscar :before con gol real
-  const styleBlocks = blockHtml.match(/<style>[^<]*<\/style>/g) || [];
-  for (const sb of styleBlocks) {
-    const m = sb.match(/:before\{content:"\\003(\d)"\}/);
-    if (m) return parseInt(m[1]);
-  }
+  // 1. Texto directo en fa-solid sin hijos: <i class="fa-solid">2</i>
+  const directMatch = blockHtml.match(/<i[^>]*fa-solid[^>]*>\s*(\d)\s*<\/i>/);
+  if (directMatch) return parseInt(directMatch[1]);
 
-  // 2. Span con id=idh: el PRIMER texto visible (antes del primer span oculto hijo)
-  const spanMatch = blockHtml.match(/<span[^>]*id=idh[^>]*>([^<]*)/);
+  // 2. Span con texto visible ANTES de hijo oculto: <span id=idh...>2<span hidden>...
+  //    o span con texto y sin hijos: <span id=idh...>2</span>
+  const spanMatch = blockHtml.match(/<span[^>]*id=["']?idh[^>]*>\s*(\d)/);
   if (spanMatch) {
-    const txt = spanMatch[1].trim();
-    if (/^\d$/.test(txt)) return parseInt(txt);
+    // Verificar que ese dígito no está dentro de un display:none
+    const afterDigit = blockHtml.substring(blockHtml.indexOf(spanMatch[1]));
+    if (!afterDigit.startsWith(spanMatch[1] + '<span')) {
+      return parseInt(spanMatch[1]);
+    }
   }
 
-  // 3. Clase fa-N en <i> interior
-  const faClass = blockHtml.match(/class=fa-(\d)\b/);
-  if (faClass) return parseInt(faClass[1]);
+  // 3. Clase fa-N en el <i> interior
+  const faMatch = blockHtml.match(/class=["']?fa-(\d)\b/);
+  if (faMatch) return parseInt(faMatch[1]);
 
-  // 4. Número directo en fa-solid sin hijos
-  const directI = blockHtml.match(/<i[^>]*fa-solid[^>]*>\s*(\d)\s*<\/i>/);
-  if (directI) return parseInt(directI[1]);
+  // 4. CSS :before con contenido numérico real (sin display:none)
+  const beforeMatch = blockHtml.match(/:before\{content:"\\003(\d)"(?!\s*;?\s*display)/);
+  if (beforeMatch) return parseInt(beforeMatch[1]);
+
+  // 5. CSS :before sin unicode: content:"N"
+  const beforePlain = blockHtml.match(/:before\{content:"(\d)"(?!\s*;?\s*display)/);
+  if (beforePlain) return parseInt(beforePlain[1]);
 
   return null;
 }
 
-
-// ─── Fetch acta usando cliente con sesión ya iniciada ───
-async function fetchActa(client, codActa) {
-  const url = `https://www.futgal.es/pnfg/NPcd/NFG_CmpPartido?cod_primaria=1000120&CodActa=${codActa}`;
-  const { data: html } = await client.get(url, {
-    headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
-    timeout: 15000,
-    responseEncoding: 'latin1'
-  });
-  return html || '';
+// ─── Normalizar nombre del equipo ───
+function normalizeName(raw) {
+  return raw
+    .replace(/NARAHIO U\.?D\.?/i,        'UD Narahío')
+    .replace(/RAPIDO DE NEDA/i,           'Rápido de Neda')
+    .replace(/ASOCIACION DEPORTIVA/i,     'AD')
+    .replace(/GALICIA MUGARDOS "B"/i,     'Galicia Mugardos B')
+    .replace(/S\.D\.C\.\s*/i,             'SDC ')
+    .replace(/A\.D\.R\.\s*/i,             'ADR ')
+    .replace(/A\.D\.C\.\s*/i,             'ADC ')
+    .replace(/C\.C\.R\.Y D\.\s*/i,        'CCRD ')
+    .replace(/C\.F\.\s*/i,                'CF ')
+    .replace(/C\.D\.\s*/i,                'CD ')
+    .replace(/S\.D\.\s*/i,                'SD ')
+    .replace(/U\.D\.\s*/i,                'UD ')
+    .replace(/\s+/g, ' ')
+    .trim();
 }
 
-// ─── Parser del calendario ───
+// ─── Parsear el calendario completo ───
 function parseCalendar(html) {
   const $ = cheerio.load(html, { decodeEntities: false });
   const NARAHIO     = /narah[ií]o/i;
   const competition = '2ª FUTGAL Ferrol 25/26';
   const partidos    = [];
-  const today       = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today       = new Date(); today.setHours(0,0,0,0);
 
   $('.panel.panel-primary').each((_, panel) => {
     const $panel = $(panel);
 
-    const headingText = $panel.find('.panel-title').text();
-    const jornadaM    = headingText.match(/Jornada\s*(\d+)/i);
-    const jornadaNum  = jornadaM ? parseInt(jornadaM[1]) : null;
-    const fechaM      = headingText.match(/\((\d{2}-\d{2}-\d{4})\)/);
+    // Número y fecha de la jornada
+    const headingText  = $panel.find('.panel-title').text();
+    const jornadaM     = headingText.match(/Jornada\s*(\d+)/i);
+    const jornadaNum   = jornadaM ? parseInt(jornadaM[1]) : null;
+    const fechaM       = headingText.match(/\((\d{2}-\d{2}-\d{4})\)/);
     const fechaJornada = fechaM ? fechaM[1] : '';
 
+    // Cada fila exterior = un partido
     $panel.find('> .panel-body > table > tbody > tr, > .panel-body > table > tr').each((_, row) => {
       const $innerTable = $(row).find('table').first();
       if (!$innerTable.length) return;
@@ -170,39 +149,47 @@ function parseCalendar(html) {
       const homeTeam = normalizeName(homeTeamRaw);
       const awayTeam = normalizeName(awayTeamRaw);
 
-      // Fecha específica del partido
+      // Fecha del partido
       let dateStr = fechaJornada;
       const clockText = $(row).find('.fa-clock-o').parent().text().trim();
       const dateMatch = clockText.match(/(\d{2}-\d{2}-\d{4})/);
       if (dateMatch) dateStr = dateMatch[1];
 
-      const matchDate = parseDate(dateStr);
+      // Convertir fecha a objeto Date
+      let matchDate = null;
+      const dm = dateStr.match(/(\d{2})-(\d{2})-(\d{4})/);
+      if (dm) matchDate = new Date(`${dm[3]}-${dm[2]}-${dm[1]}`);
 
-      // Partido jugado = tiene enlace de acta
-      const $actaLink = $(row).find('a[href*="NFG_CmpPartido"]');
-      const hasActa   = $actaLink.length > 0;
-      const actaMatch = hasActa ? ($actaLink.attr('href') || '').match(/CodActa=(\d+)/) : null;
-      const codActa   = actaMatch ? actaMatch[1] : null;
-      const played    = hasActa;
+      // Enlace del acta → partido jugado
+      const hasActa = $(row).find('a[href*="NFG_CmpPartido"]').length > 0;
 
-      // Si no tiene acta Y la fecha es pasada → ignorar
-      if (!played && matchDate && matchDate < today) return;
+      // Si no tiene acta y la fecha ya pasó → ignorar (partido sin resultado registrado)
+      if (!hasActa && matchDate && matchDate < today) return;
 
-      console.log(`  J${jornadaNum}: ${homeTeam} ${played ? '(acta:'+codActa+')' : 'vs'} ${awayTeam} (${dateStr})`);
+      const played = hasActa;
+
+      // Extraer goles del td central (ntype)
+      let homeGoals = null, awayGoals = null;
+      if (played) {
+        const $ntypeTd  = $($tds[1]);
+        const ntypeHtml = $ntypeTd.html() || '';
+        const sepIdx    = ntypeHtml.indexOf('fa-minus');
+        if (sepIdx !== -1) {
+          homeGoals = extractGoal(ntypeHtml.substring(0, sepIdx));
+          awayGoals = extractGoal(ntypeHtml.substring(sepIdx));
+        }
+      }
+
+      console.log(`  J${jornadaNum}: ${homeTeam} ${played ? (homeGoals??'?')+'-'+(awayGoals??'?') : 'vs'} ${awayTeam} (${dateStr})`);
 
       partidos.push({ jornada: jornadaNum, homeTeam, awayTeam,
-        homeGoals: null, awayGoals: null, codActa,
-        date: dateStr, matchDate, played });
+        homeGoals, awayGoals, date: dateStr, matchDate, played });
     });
   });
 
-  // Último jugado: mayor jornada con resultado
-  const jugados = partidos.filter(p => p.played).sort((a,b) => b.jornada - a.jornada);
-
-  // Próximo: menor jornada sin resultado con fecha futura
-  const pendientes = partidos
-    .filter(p => !p.played && p.matchDate && p.matchDate >= today)
-    .sort((a,b) => a.jornada - b.jornada);
+  const jugados    = partidos.filter(p => p.played).sort((a,b) => b.jornada - a.jornada);
+  const pendientes = partidos.filter(p => !p.played && p.matchDate && p.matchDate >= today)
+                             .sort((a,b) => a.jornada - b.jornada);
 
   return {
     lastMatch: jugados[0] ? {
@@ -233,26 +220,6 @@ async function refreshCache() {
     const result = parseCalendar(html);
     if (!result.lastMatch && !result.nextMatch) throw new Error('No se encontraron partidos');
 
-    // Obtener goles del acta del último partido (mismo cliente = misma sesión)
-    if (result.lastMatch && result.lastMatch.codActa) {
-      console.log(`  → Consultando acta ${result.lastMatch.codActa}...`);
-      try {
-        const actaHtml = await fetchActa(client, result.lastMatch.codActa);
-        console.log(`  → Acta HTML: ${actaHtml.length} chars`);
-        // Buscar resultado en el HTML del acta
-        const $a = cheerio.load(actaHtml, { decodeEntities: false });
-        const actaText = $a.root().text().replace(/\s+/g, ' ');
-        // El resultado aparece como "N - N" o "N-N"
-        const scoreM = actaText.match(/(\d+)\s*[-–]\s*(\d+)/);
-        if (scoreM) {
-          result.lastMatch.homeGoals = parseInt(scoreM[1]);
-          result.lastMatch.awayGoals = parseInt(scoreM[2]);
-        }
-      } catch(e) {
-        console.log(`  → Error leyendo acta: ${e.message}`);
-      }
-    }
-
     cache.data      = result;
     cache.updatedAt = new Date();
     console.log(`✅ Último:  ${result.lastMatch?.homeTeam} ${result.lastMatch?.homeGoals}-${result.lastMatch?.awayGoals} ${result.lastMatch?.awayTeam}`);
@@ -280,14 +247,20 @@ app.get('/api/partidos', async (req, res) => {
   }
 });
 
+// Forzar actualización manual
+app.get('/api/refresh', async (req, res) => {
+  await refreshCache();
+  res.json({ ok: true, data: cache.data });
+});
+
+// Debug: HTML del calendario
 app.get('/api/debug', async (req, res) => {
   const offset = parseInt(req.query.offset) || 0;
   try {
     const client = await createSession();
     const html   = await fetchPage(client);
-    const narahIdx = html.toLowerCase().indexOf('narah');
     res.set('Content-Type', 'text/plain');
-    res.send(`Total: ${html.length} | Narahío pos: ${narahIdx}\n\n` +
+    res.send(`Total: ${html.length} | Narahío pos: ${html.toLowerCase().indexOf('narah')}\n\n` +
              html.substring(offset, offset + 10000));
   } catch (err) {
     res.set('Content-Type', 'text/plain');
@@ -295,124 +268,19 @@ app.get('/api/debug', async (req, res) => {
   }
 });
 
-
-
-
-// Debug: buscar función ntype en nova.js
-
-app.get('/api/hint', async (req, res) => {
-  try {
-    const client = await createSession();
-    const urls = [
-      'https://www.futgal.es/pnfg/script/hint.js',
-      'https://files.futgal.es/pnfg/script/hint.js',
-      'https://www.futgal.es/pnfg/script/nova.js',
-    ];
-    for (const url of urls) {
-      try {
-        const { data } = await client.get(url, {
-          headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
-          timeout: 10000, responseType: 'text'
-        });
-        const idx = data.indexOf('ntype');
-        res.set('Content-Type', 'text/plain');
-        res.send(`=== ${url} (${data.length} chars, ntype at ${idx}) ===\n\n` + 
-                 (idx >= 0 ? data.substring(Math.max(0,idx-100), idx+600) : data.substring(0, 1000)));
-        return;
-      } catch(e) { continue; }
-    }
-    res.set('Content-Type', 'text/plain');
-    res.send('No se encontró el archivo');
-  } catch(err) {
-    res.set('Content-Type', 'text/plain');
-    res.send('ERROR: ' + err.message);
-  }
-});
-
-app.get('/api/ntype', async (req, res) => {
-  try {
-    const client = await createSession();
-    const { data } = await client.get('https://files.futgal.es/pnfg/script/nova_marco/global/scripts/app.min.js', {
-      headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
-      timeout: 15000, responseType: 'text'
-    });
-    const idx = data.indexOf('function ntype');
-    if (idx >= 0) {
-      res.set('Content-Type', 'text/plain');
-      res.send('FOUND at ' + idx + ':\n\n' + data.substring(idx, idx + 800));
-    } else {
-      // Try nova.js
-      const { data: nova } = await client.get('https://files.futgal.es/pnfg/script/nova.js', {
-        headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
-        timeout: 15000, responseType: 'text'
-      });
-      const idx2 = nova.indexOf('function ntype');
-      res.set('Content-Type', 'text/plain');
-      if (idx2 >= 0) {
-        res.send('FOUND in nova.js at ' + idx2 + ':\n\n' + nova.substring(idx2, idx2 + 800));
-      } else {
-        // Search all script files listed on the page
-        const calHtml = await fetchPage(client);
-        const scripts = [];
-        const re = /src="([^"]*\.js[^"]*)"/g;
-        let m;
-        while ((m = re.exec(calHtml)) !== null) scripts.push(m[1]);
-        res.send('ntype not found. Scripts on page:\n' + scripts.join('\n'));
-      }
-    }
-  } catch(err) {
-    res.set('Content-Type', 'text/plain');
-    res.send('ERROR: ' + err.message + '\n' + err.stack);
-  }
-});
-
-app.get('/api/novajs', async (req, res) => {
-  try {
-    const client = await createSession();
-    const { data } = await client.get('https://www.futgal.es/pnfg/script/nova.js', {
-      headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
-      timeout: 10000, responseType: 'text'
-    });
-    res.set('Content-Type', 'text/plain');
-    // Buscar solo la función ntype
-    const idx = data.indexOf('ntype');
-    res.send(data.substring(Math.max(0, idx - 50), idx + 500));
-  } catch(err) {
-    res.set('Content-Type', 'text/plain');
-    res.send('ERROR: ' + err.message);
-  }
-});
-
-
-// Debug acta: /api/acta?cod=1307471
-app.get('/api/acta', async (req, res) => {
-  const cod = req.query.cod || '1307471';
-  try {
-    const client = await createSession();
-    const html   = await fetchActa(client, cod);
-    const offset = parseInt(req.query.offset) || 0;
-    res.set('Content-Type', 'text/plain');
-    res.send(`=== ACTA ${cod} | Total: ${html.length} chars ===\n\n` + html.substring(offset, offset + 8000));
-  } catch(err) {
-    res.set('Content-Type', 'text/plain');
-    res.send('ERROR: ' + err.message);
-  }
-});
-
+// Debug: partidos del Narahío con HTML del marcador
 app.get('/api/narahio-html', async (req, res) => {
   try {
     const client = await createSession();
     const html   = await fetchPage(client);
-    const $ = cheerio.load(html, { decodeEntities: false });
+    const $      = cheerio.load(html, { decodeEntities: false });
     const results = [];
     $('.panel.panel-primary').each((_, panel) => {
       $(panel).find('table tr').each((_, row) => {
-        const text = $(row).text();
-        if (/narah/i.test(text)) {
-          const $inner = $(row).find('table').first();
+        if (/narah/i.test($(row).text())) {
           results.push({
-            jornada: $(panel).find('.panel-title').text().trim(),
-            innerHtml: $inner.html()
+            jornada:   $(panel).find('.panel-title').text().trim(),
+            innerHtml: $(row).find('table').first().html()
           });
         }
       });
