@@ -49,12 +49,8 @@ const CACHE_MINUTES = 60;
 
 // ─── OBTENER COOKIES de futgal.es ───
 async function getCookies() {
-  const res = await axios.get(FUTGAL_HOME, {
-    headers: HEADERS,
-    timeout: 15000,
-    maxRedirects: 5,
-    withCredentials: true
-  });
+  return 'cookies_accepted=1; cookie_consent=1; PHPSESSID=accepted';
+}
 
   // Recoger todas las cookies de la respuesta
   const rawCookies = res.headers['set-cookie'] || [];
@@ -75,7 +71,7 @@ async function fetchJornada(jornada, cookieStr) {
     headers: {
       ...HEADERS,
       'Referer':        `${FUTGAL_HOME}/`,
-      'Cookie':         cookieStr,
+      'Cookie': 'cookies_accepted=1; cookie_consent=1; PHPSESSID=accepted',
       'Cache-Control':  'no-cache',
     },
     timeout: 15000,
