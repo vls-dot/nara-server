@@ -297,7 +297,9 @@ app.get('/health', (_, res) =>
 
 cron.schedule('0 9 * * 1,4', () => refreshCache(), { timezone: 'Europe/Madrid' });
 
-app.listen(PORT, async () => {
+app.listen(PORT, () => {
   console.log(`\n🚀 Servidor UD Narahío en puerto ${PORT}`);
-  await refreshCache();
+  // Esperar 15s a que Render configure la red antes del primer scraping
+  console.log('⏳ Esperando 15s antes del primer scraping...');
+  setTimeout(refreshCache, 15000);
 });
