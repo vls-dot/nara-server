@@ -299,6 +299,36 @@ app.get('/api/debug', async (req, res) => {
 
 
 // Debug: buscar función ntype en nova.js
+
+app.get('/api/hint', async (req, res) => {
+  try {
+    const client = await createSession();
+    const urls = [
+      'https://www.futgal.es/pnfg/script/hint.js',
+      'https://files.futgal.es/pnfg/script/hint.js',
+      'https://www.futgal.es/pnfg/script/nova.js',
+    ];
+    for (const url of urls) {
+      try {
+        const { data } = await client.get(url, {
+          headers: { ...HEADERS, Referer: FUTGAL_HOME + '/' },
+          timeout: 10000, responseType: 'text'
+        });
+        const idx = data.indexOf('ntype');
+        res.set('Content-Type', 'text/plain');
+        res.send(`=== ${url} (${data.length} chars, ntype at ${idx}) ===\n\n` + 
+                 (idx >= 0 ? data.substring(Math.max(0,idx-100), idx+600) : data.substring(0, 1000)));
+        return;
+      } catch(e) { continue; }
+    }
+    res.set('Content-Type', 'text/plain');
+    res.send('No se encontró el archivo');
+  } catch(err) {
+    res.set('Content-Type', 'text/plain');
+    res.send('ERROR: ' + err.message);
+  }
+});
+
 app.get('/api/ntype', async (req, res) => {
   try {
     const client = await createSession();
