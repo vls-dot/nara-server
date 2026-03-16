@@ -331,10 +331,16 @@ app.get('/api/acta', async (req, res) => {
       { headers: { ...HEADERS, Referer: FUTGAL_HOME+'/' }, timeout: 10000, responseEncoding: 'latin1' }
     );
     res.set('Content-Type', 'text/plain');
-    // Show just the relevant part
     const $ = cheerio.load(html, { decodeEntities: false });
-    const bodyText = $.root().text().replace(/\s+/g, ' ').substring(0, 3000);
-    res.send(`=== ACTA ${cod} ===\n\n` + bodyText);
+    // Buscar elementos con el resultado
+    const scoreEls = [];
+    $('[class*="resultado"], [class*="wid2"], .ntype, [class*="marcador"], [class*="score"]').each((_, el) => {
+      scoreEls.push($(el).attr('class') + ' → ' + $(el).html());
+    });
+    // También mostrar chunk del HTML donde aparece el resultado
+    const chunk = html.substring(html.indexOf('wid2') > 0 ? Math.max(0, html.indexOf('wid2') - 200) : 5000, 
+                                  html.indexOf('wid2') > 0 ? html.indexOf('wid2') + 3000 : 8000);
+    res.send(`=== ACTA ${cod} ===\n\nELEMENTOS SCORE:\n${scoreEls.slice(0,20).join('\n')}\n\nHTML CHUNK:\n${chunk}`);
   } catch(err) {
     res.set('Content-Type', 'text/plain');
     res.send('ERROR: ' + err.message);
