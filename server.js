@@ -55,55 +55,109 @@ function createClient() {
 async function fetchJornada(jornada) {
   const client = createClient();
 
-  // Paso 1: visitar la home para que futgal establezca la session_id
-  await client.get(FUTGAL_HOME, { headers: HEADERS, timeout: 15000 });
+  // Paso 1: visitar la home para obtener session_id
+  await client.get(FUTGAL_HOME, {
+    headers: HEADERS,
+    timeout: 15000,
+    maxRedirects: 5
+  });
 
-  // Paso 2: pedir la jornada con las cookies ya guardadas en el jar
+  // Pequeña pausa
+  await new Promise(r => setTimeout(r, 500));
+
+  // Paso 2: pedir la jornada con las cookies del jar
   const params = new URLSearchParams({ ...FUTGAL_PARAMS, CodJornada: jornada });
   const { data: html } = await client.get(`${FUTGAL_BASE}?${params}`, {
     headers: { ...HEADERS, Referer: `${FUTGAL_HOME}/` },
-    timeout: 15000
+    timeout: 15000,
+    maxRedirects: 5
   });
 
-  return html;
+  return html || '';
 }
 
-// ─── Parsear HTML de una jornada ───
+// ─── Parsear HTML de futgal.es ───
 function parseJornada(html, jornadaNum) {
   const $ = cheerio.load(html);
   const partidos = [];
 
+  // futgal.es estructura: tabla con filas de partidos
+  // Cada fila tiene: fecha | hora | local | resultado | visitante | ...
   $('tr').each((_, el) => {
-    const cells = $(el).find('td')
+    const $row = $(el);
+    const cells = $row.find('td')
       .map((_, c) => $(c).text().replace(/\s+/g, ' ').trim())
-      .get().filter(t => t.length > 0);
+      .get();
 
     if (cells.length < 3) return;
 
+    const rowText = cells.join(' | ');
+
+    // Buscar celda con resultado "N - N" o "N:N" o "- : -"
     for (let i = 0; i < cells.length; i++) {
-      // Partido jugado: celda con "N-N" o "N:N"
-      const scoreMatch = cells[i].match(/^(\d+)\s*[-:]\s*(\d+)$/);
+      const cell = cells[i];
+
+      // Resultado jugado
+      const scoreMatch = cell.match(/^(\d+)\s*[-:]\s*(\d+)$/) ||
+                         cell.match(/^(\d+)\s*-\s*(\d+)$/);
       if (scoreMatch) {
-        const homeTeam = (cells[i - 1] || '').replace(/^\d+\.?\s*/, '').trim();
-        const awayTeam = (cells[i + 1] || '').replace(/^\d+\.?\s*/, '').trim();
-        const date     = cells.find(c => /\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/.test(c)) || '';
-        if (homeTeam.length > 2 && awayTeam.length > 2) {
-          partidos.push({ jornada: jornadaNum, homeTeam, awayTeam,
-            homeGoals: parseInt(scoreMatch[1]), awayGoals: parseInt(scoreMatch[2]),
-            date, played: true });
+        // Buscar equipos: normalmente 1-2 celdas antes y después
+        let homeTeam = '';
+        let awayTeam = '';
+        for (let back = i - 1; back >= 0; back--) {
+          if (cells[back].length > 2 && !/^\d+$/.test(cells[back]) &&
+              !/^(\d{1,2}[\/\-]\d{1,2})/.test(cells[back])) {
+            homeTeam = cells[back];
+            break;
+          }
         }
-        return;
+        for (let fwd = i + 1; fwd < cells.length; fwd++) {
+          if (cells[fwd].length > 2 && !/^\d+$/.test(cells[fwd]) &&
+              !/^(\d{1,2}[\/\-]\d{1,2})/.test(cells[fwd])) {
+            awayTeam = cells[fwd];
+            break;
+          }
+        }
+        const date = cells.find(c => /\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/.test(c)) || '';
+        if (homeTeam.length > 2 && awayTeam.length > 2 &&
+            !/^(fecha|hora|jornada|local|visitante|resultado)$/i.test(homeTeam)) {
+          partidos.push({
+            jornada: jornadaNum, homeTeam, awayTeam,
+            homeGoals: parseInt(scoreMatch[1]),
+            awayGoals: parseInt(scoreMatch[2]),
+            date, played: true
+          });
+          return; // siguiente fila
+        }
       }
 
-      // Partido pendiente: celda "-" o "- : -"
-      if (/^-+$|^-\s*:\s*-$/.test(cells[i])) {
-        const homeTeam = (cells[i - 1] || '').replace(/^\d+\.?\s*/, '').trim();
-        const awayTeam = (cells[i + 1] || '').replace(/^\d+\.?\s*/, '').trim();
-        const date     = cells.find(c => /\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/.test(c)) || '';
+      // Partido pendiente: "- : -" o "-:-" o solo "-"
+      if (/^-\s*:\s*-$|^-$/.test(cell)) {
+        let homeTeam = '';
+        let awayTeam = '';
+        for (let back = i - 1; back >= 0; back--) {
+          if (cells[back].length > 2 && !/^\d+$/.test(cells[back]) &&
+              !/^(\d{1,2}[\/\-]\d{1,2})/.test(cells[back])) {
+            homeTeam = cells[back];
+            break;
+          }
+        }
+        for (let fwd = i + 1; fwd < cells.length; fwd++) {
+          if (cells[fwd].length > 2 && !/^\d+$/.test(cells[fwd]) &&
+              !/^(\d{1,2}[\/\-]\d{1,2})/.test(cells[fwd])) {
+            awayTeam = cells[fwd];
+            break;
+          }
+        }
+        const date = cells.find(c => /\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4}/.test(c)) || '';
         if (homeTeam.length > 2 && awayTeam.length > 2 &&
-            !/local|visitante|equipo|jornada/i.test(homeTeam)) {
-          partidos.push({ jornada: jornadaNum, homeTeam, awayTeam,
-            homeGoals: null, awayGoals: null, date, played: false });
+            !/^(fecha|hora|jornada|local|visitante|resultado)$/i.test(homeTeam)) {
+          partidos.push({
+            jornada: jornadaNum, homeTeam, awayTeam,
+            homeGoals: null, awayGoals: null,
+            date, played: false
+          });
+          return;
         }
       }
     }
@@ -122,15 +176,18 @@ async function scrapePartidos() {
   for (let j = 1; j <= JORNADA_FIN; j++) {
     try {
       const html       = await fetchJornada(j);
+      console.log(`  → J${j}: ${html.length} chars`);
+      if (html.length < 200) continue;
+
       const partidos   = parseJornada(html, j);
       const delNarahio = partidos.filter(p =>
         NARAHIO.test(p.homeTeam) || NARAHIO.test(p.awayTeam)
       );
       if (delNarahio.length > 0) {
         todasJornadas.push(...delNarahio);
-        console.log(`  → J${j}: ${delNarahio[0].homeTeam} vs ${delNarahio[0].awayTeam} | jugado: ${delNarahio[0].played}`);
+        console.log(`    ✓ ${delNarahio[0].homeTeam} vs ${delNarahio[0].awayTeam} | jugado: ${delNarahio[0].played}`);
       }
-      await new Promise(r => setTimeout(r, 500));
+      await new Promise(r => setTimeout(r, 600));
     } catch (err) {
       console.log(`  → J${j}: error (${err.message})`);
     }
@@ -140,9 +197,6 @@ async function scrapePartidos() {
   const pendientes = todasJornadas.filter(p => !p.played).sort((a,b) => a.jornada - b.jornada);
   const lastMatch  = jugados[0]    || null;
   const nextMatch  = pendientes[0] || null;
-
-  console.log(`  → Último: ${lastMatch?.homeTeam} ${lastMatch?.homeGoals}-${lastMatch?.awayGoals} ${lastMatch?.awayTeam}`);
-  console.log(`  → Próximo: ${nextMatch?.homeTeam} vs ${nextMatch?.awayTeam}`);
 
   return {
     lastMatch: lastMatch ? {
@@ -190,16 +244,19 @@ app.get('/api/partidos', async (req, res) => {
   }
 });
 
+// Debug: muestra el HTML raw de una jornada
 app.get('/api/debug', async (req, res) => {
+  const j      = parseInt(req.query.jornada) || 22;
+  const offset = parseInt(req.query.offset)  || 0;
   try {
-    const j    = req.query.jornada || 22;
-    const html = await fetchJornada(j);
+    const html     = await fetchJornada(j);
+    const narahIdx = html.toLowerCase().indexOf('narah');
+    const info     = `=== JORNADA ${j} | Total: ${html.length} chars | Narahío pos: ${narahIdx} ===\n\n`;
     res.set('Content-Type', 'text/plain');
-    const offset = parseInt(req.query.offset) || 0;
-    const narahioIdx = html.toLowerCase().indexOf('narah');
-    res.send(`=== JORNADA ${j} | Total: ${html.length} chars | Narahío en posición: ${narahioIdx} ===\n\n` + html.substring(offset, offset + 10000));
+    res.send(info + html.substring(offset, offset + 10000));
   } catch (err) {
-    res.status(500).send('Error: ' + err.message);
+    res.set('Content-Type', 'text/plain');
+    res.send(`ERROR en jornada ${j}: ${err.message}\n${err.stack}`);
   }
 });
 
