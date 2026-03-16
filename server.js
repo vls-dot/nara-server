@@ -36,7 +36,7 @@ const CACHE_MINUTES = 30;
 
 // ─── FETCH con ScraperAPI ───
 async function fetchPage() {
-  const url = `http://api.scraperapi.com?api_key=${SCRAPER_KEY}&url=${encodeURIComponent(TARGET_URL)}&render=true`;
+  const url = `http://api.scraperapi.com?api_key=${SCRAPER_KEY}&url=${encodeURIComponent(TARGET_URL)}`;
   const { data: html } = await axios.get(url, { timeout: 30000 });
   return html;
 }
