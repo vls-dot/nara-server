@@ -285,6 +285,34 @@ app.get('/api/debug', async (req, res) => {
   }
 });
 
+app.get('/api/narahio-html', async (req, res) => {
+  try {
+    const html = await fetchPage();
+    const $ = cheerio.load(html, { decodeEntities: false });
+    const results = [];
+    $('.panel.panel-primary').each((_, panel) => {
+      $(panel).find('table tr').each((_, row) => {
+        const text = $(row).text();
+        if (/narah/i.test(text)) {
+          const $inner = $(row).find('table').first();
+          results.push({
+            jornada: $(panel).find('.panel-title').text().trim(),
+            html: $inner.html()
+          });
+        }
+      });
+    });
+    res.json(results);
+  } catch (err) {
+    res.status(500).send('ERROR: ' + err.message);
+  }
+});
+```
+
+Sube ese cambio, luego abre:
+```
+https://TU-SERVIDOR.onrender.com/api/narahio-html
+
 app.get('/health', (_, res) =>
   res.json({ status: 'ok', hasData: !!cache.data, updatedAt: cache.updatedAt })
 );
