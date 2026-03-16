@@ -26,7 +26,7 @@ const HEADERS = {
 const FALLBACK_DATA = {
   lastMatch: {
     homeTeam: "AD Miño B", awayTeam: "UD Narahío",
-    homeGoals: 0, awayGoals: 2, date: "15-03-2026",
+    date: "15-03-2026",
     competition: "2ª FUTGAL Ferrol 25/26", jornada: "Jornada 22"
   },
   nextMatch: {
@@ -85,13 +85,13 @@ function extractGoal(blockHtml) {
   const faMatch = blockHtml.match(/class=["']?fa-(\d)\b/);
   if (faMatch) return parseInt(faMatch[1]);
 
-  // 4. CSS :before con contenido numérico real (sin display:none)
-  const beforeMatch = blockHtml.match(/:before\{content:"\\003(\d)"(?!\s*;?\s*display)/);
-  if (beforeMatch) return parseInt(beforeMatch[1]);
+  // 4. CSS :before o :after con contenido numérico real (sin display:none)
+  const beforeMatch = blockHtml.match(/:(before|after)\{content:"\\003(\d)"(?!\s*;?\s*display)/);
+  if (beforeMatch) return parseInt(beforeMatch[2]);
 
-  // 5. CSS :before sin unicode: content:"N"
-  const beforePlain = blockHtml.match(/:before\{content:"(\d)"(?!\s*;?\s*display)/);
-  if (beforePlain) return parseInt(beforePlain[1]);
+  // 5. CSS :before/:after sin unicode: content:"N" (sin display:none)
+  const beforePlain = blockHtml.match(/:(before|after)\{content:"(\d)"(?!\s*;?\s*display)/);
+  if (beforePlain) return parseInt(beforePlain[2]);
 
   return null;
 }
@@ -193,10 +193,9 @@ function parseCalendar(html) {
 
   return {
     lastMatch: jugados[0] ? {
-      homeTeam:  jugados[0].homeTeam,  awayTeam:  jugados[0].awayTeam,
-      homeGoals: jugados[0].homeGoals, awayGoals: jugados[0].awayGoals,
-      date:      jugados[0].date,      competition,
-      jornada:   `Jornada ${jugados[0].jornada}`
+      homeTeam: jugados[0].homeTeam, awayTeam: jugados[0].awayTeam,
+      date:     jugados[0].date,     competition,
+      jornada:  `Jornada ${jugados[0].jornada}`
     } : null,
     nextMatch: pendientes[0] ? {
       homeTeam: pendientes[0].homeTeam, awayTeam: pendientes[0].awayTeam,
@@ -222,7 +221,7 @@ async function refreshCache() {
 
     cache.data      = result;
     cache.updatedAt = new Date();
-    console.log(`✅ Último:  ${result.lastMatch?.homeTeam} ${result.lastMatch?.homeGoals}-${result.lastMatch?.awayGoals} ${result.lastMatch?.awayTeam}`);
+    console.log(`✅ Último:  ${result.lastMatch?.homeTeam} vs ${result.lastMatch?.awayTeam}`);
     console.log(`   Próximo: ${result.nextMatch?.homeTeam} vs ${result.nextMatch?.awayTeam} (${result.nextMatch?.date})`);
   } catch (err) {
     console.error('❌ Error:', err.message);
