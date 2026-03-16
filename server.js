@@ -195,7 +195,9 @@ app.get('/api/debug', async (req, res) => {
     const j    = req.query.jornada || 22;
     const html = await fetchJornada(j);
     res.set('Content-Type', 'text/plain');
-    res.send(`=== JORNADA ${j} (${html.length} chars) ===\n\n` + html.substring(0, 10000));
+    const offset = parseInt(req.query.offset) || 0;
+    const narahioIdx = html.toLowerCase().indexOf('narah');
+    res.send(`=== JORNADA ${j} | Total: ${html.length} chars | Narahío en posición: ${narahioIdx} ===\n\n` + html.substring(offset, offset + 10000));
   } catch (err) {
     res.status(500).send('Error: ' + err.message);
   }
